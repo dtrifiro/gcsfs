@@ -1086,45 +1086,47 @@ class GCSFileSystem(AsyncFileSystem):
     async def _find(self, path, withdirs=False, detail=False, prefix="", **kwargs):
         path = self._strip_protocol(path)
         bucket, key = self.split_path(path)
+        if prefix:
+            _path = "" if not key else key.rstrip("/") + "/"
+            _prefix = f"{_path}{prefix}"
+        else:
+            _prefix = key
         out, _ = await self._do_list_objects(
-            path,
-            delimiter=None,
-            prefix=prefix,
+            bucket,
+            delimiter="",
+            prefix=_prefix,
         )
-        if not prefix and not out and key:
-            try:
-                out = [
-                    await self._get_object(
-                        path,
-                    )
-                ]
-            except FileNotFoundError:
-                out = []
+
         dirs = []
         sdirs = set()
         cache_entries = {}
         for o in out:
             par = o["name"]
+            obj_parent = self._parent(par)
+
             while par:
                 par = self._parent(par)
                 if par not in sdirs:
                     if len(par) < len(path):
                         break
                     sdirs.add(par)
-                    dirs.append(
-                        {
-                            "Key": self.split_path(par)[1],
-                            "Size": 0,
-                            "name": par,
-                            "StorageClass": "DIRECTORY",
-                            "type": "directory",
-                            "size": 0,
-                        }
-                    )
-                # Don't cache "folder-like" objects (ex: "Create Folder" in GCS console) to prevent
-                # masking subfiles in subsequent requests.
-                if not o["name"].endswith("/"):
-                    cache_entries.setdefault(par, []).append(o)
+                    dir_info = {
+                        "Key": self.split_path(par)[1],
+                        "Size": 0,
+                        "name": par,
+                        "StorageClass": "DIRECTORY",
+                        "type": "directory",
+                        "size": 0,
+                    }
+                    dirs.append(dir_info)
+                    pparent = self._parent(par)
+                    if len(pparent) < len(path):
+                        continue
+                    cache_entries.setdefault(pparent, []).append(dir_info)
+            # Don't cache "folder-like" objects (ex: "Create Folder" in GCS console) to prevent
+            # masking subfiles in subsequent requests.
+            if not o["name"].endswith("/"):
+                cache_entries.setdefault(obj_parent, []).append(o)
         if not prefix:
             self.dircache.update(cache_entries)
 
